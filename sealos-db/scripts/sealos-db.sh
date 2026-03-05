@@ -1,13 +1,9 @@
 #!/bin/bash
 # Sealos Database CLI - single entry point for all database operations.
 #
-# Usage:
-#   API_URL=<url> ./sealos-db.sh <command> [args...] <<< "$KUBECONFIG_YAML"   (stdin, preferred)
-#   KUBECONFIG_PATH=<path> API_URL=<url> ./sealos-db.sh <command> [args...]   (file, fallback)
+# Usage: KUBECONFIG_PATH=<path> API_URL=<url> ./sealos-db.sh <command> [args...]
 #
-# Auth (checked in order):
-#   1. stdin    - pipe raw kubeconfig YAML via stdin (no file needed)
-#   2. KUBECONFIG_PATH - path to kubeconfig file (default: ~/.kube/config)
+# Auth: KUBECONFIG_PATH - path to kubeconfig YAML file (default: ~/.kube/config)
 #
 # Commands:
 #   create <json_body>              Create a new database
@@ -27,30 +23,19 @@ API_URL="${API_URL:?ERROR: API_URL environment variable is required}"
 CMD="${1:?ERROR: Command required. Use: create|list|list-versions|get|update|delete|start|pause|restart|enable-public|disable-public}"
 shift
 
-# --- capture stdin early (before anything else reads it) ---
-_STDIN_KC=""
-if [ ! -t 0 ]; then
-  _STDIN_KC=$(cat)
-fi
-
 # --- helpers ---
 
 get_encoded_kubeconfig() {
-  local kc_content=""
-  if [ -n "$_STDIN_KC" ]; then
-    kc_content="$_STDIN_KC"
-  else
-    local kc_path="${KUBECONFIG_PATH:-$HOME/.kube/config}"
-    if [ ! -f "$kc_path" ]; then
-      echo "ERROR: No kubeconfig from stdin or at $kc_path" >&2
-      exit 1
-    fi
-    kc_content=$(cat "$kc_path")
+  local kc_path="${KUBECONFIG_PATH:-$HOME/.kube/config}"
+  if [ ! -f "$kc_path" ]; then
+    echo "ERROR: Kubeconfig not found at $kc_path" >&2
+    exit 1
   fi
   python3 -c "
 import urllib.parse, sys
-print(urllib.parse.quote(sys.stdin.read(), safe=''))
-" <<< "$kc_content"
+with open(sys.argv[1]) as f:
+    print(urllib.parse.quote(f.read(), safe=''))
+" "$kc_path"
 }
 
 api_call() {
