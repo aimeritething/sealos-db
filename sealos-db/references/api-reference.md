@@ -4,7 +4,8 @@ Base URL: `https://dbprovider.{domain}/api/v2alpha`
 
 ## Authentication
 
-All requests require a URL-encoded kubeconfig YAML in the `Authorization` header.
+All requests require a URL-encoded kubeconfig YAML in the `Authorization` header,
+**except** `GET /databases/versions` which requires no authentication.
 
 ```
 Authorization: <encodeURIComponent(kubeconfigYaml)>
@@ -101,7 +102,9 @@ Connection info:
 
 ### GET /databases/versions -- List Available Versions
 
-Response: `200 OK` -> `{ "data": { "postgresql": ["postgresql-14.8.0", ...], ... } }`
+**No authentication required.** This endpoint uses the server's own service account.
+
+Response: `200 OK` -> `{ "postgresql": ["postgresql-14.8.0", ...], ... }`
 
 ### PATCH /databases/{name} -- Update Resources
 

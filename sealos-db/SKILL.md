@@ -48,17 +48,55 @@ If intent is ambiguous, ask one clarifying question.
 
 Every operation starts here. Skip if already done in this conversation.
 
-1. Check if `~/.kube/config` exists by reading it
-   - **Exists**: Parse the YAML to extract `server` URL (from `clusters[0].cluster.server`)
-   - **Missing**: Ask user to paste content or download from Sealos console (Settings > Kubeconfig)
+**CRITICAL: Do NOT write kubeconfig to any file.** The script accepts kubeconfig
+via stdin using a heredoc -- no temp files, no disk writes.
 
-2. Derive API base URL from kubeconfig server:
-   - Extract domain from server URL (e.g., `https://usw.sailos.io` -> `usw.sailos.io`)
-   - API URL: `https://dbprovider.{domain}/api/v2alpha`
-   - If format is unclear, ask the user
+### Step 1: Get kubeconfig
 
-3. Validate auth by running `list-databases.sh`
-   - Auth error (401) -> kubeconfig expired, suggest re-downloading
+Ask: "Do you have a Sealos user kubeconfig? It's usually downloaded from
+Sealos Console > Settings > Kubeconfig. You can paste it here or point me to the file."
+
+Three possible inputs:
+- **User pastes URL-encoded content** (starts with `apiVersion%3A`): Decode to raw YAML first.
+- **User pastes raw YAML** (starts with `apiVersion:`): Use directly.
+- **User gives a file path**: Use `KUBECONFIG_PATH=<path>` instead of stdin.
+
+For pasted content, pass via heredoc to the script. This avoids writing any files:
+```bash
+API_URL="..." bash scripts/sealos-db.sh list <<'KUBECONFIG'
+apiVersion: v1
+clusters:
+  ...
+KUBECONFIG
+```
+
+**NEVER pass large kubeconfig strings through shell variables or env vars** -- they
+get corrupted by terminal line wrapping and shell quoting.
+Always use heredocs (`<<'KUBECONFIG'`) which handle large content reliably.
+
+### Step 2: Validate identity
+
+Parse the kubeconfig YAML (decode if needed) to extract:
+a. `server` URL (from `clusters[0].cluster.server`)
+b. **User context name** (from `users[0].name` or `contexts[0].context.user`).
+   If the user is `kubernetes-admin` or any other cluster admin identity,
+   **STOP immediately** and tell the user:
+   > This is a cluster admin kubeconfig, not a Sealos user kubeconfig.
+   > The DB API needs a Sealos user kubeconfig (download from Sealos Console > Settings > Kubeconfig).
+
+   Do NOT proceed with API calls -- they will fail with "namespace not found".
+
+### Step 3: Derive API URL
+
+Extract domain from server URL (e.g., `https://usw.sailos.io` -> `usw.sailos.io`).
+API URL: `https://dbprovider.{domain}/api/v2alpha`. If format is unclear, ask the user.
+
+### Step 4: Validate auth
+
+Run `sealos-db.sh list`.
+- Auth error (401) -> kubeconfig expired, suggest re-downloading
+- **Empty array `[]` is NOT proof of valid auth** -- the API may return empty
+  for non-existent namespaces without erroring. Rely on step 2b for validation.
 
 ---
 
@@ -82,7 +120,12 @@ Gather through conversation with smart defaults:
 - Small prod: 2 CPU, 2 GB RAM, 10 GB storage, 1 replica
 - Prod HA: 2 CPU, 4 GB RAM, 20 GB storage, 3 replicas
 
-**Version** (optional): Omit to auto-select latest.
+**Version** (optional):
+- Run `sealos-db.sh list-versions` (no auth required) to get available versions.
+- Pick the latest version for the chosen database type from the list.
+- If omitted, the API auto-selects latest, but specifying it explicitly is preferred
+  so the user sees exactly what will be deployed.
+- The version string must match a value from the versions list exactly.
 
 **Termination policy** (optional, default `delete`):
 - `delete`: On future deletion, removes the cluster but **keeps persistent volumes** (data recoverable)
@@ -106,7 +149,13 @@ Database Configuration:
 
 ### Step 3: Create and Wait
 
-Run `create-database.sh`. On success (201), poll with `get-database.sh` every 5 seconds until status is `running`. Timeout after 2 minutes with guidance to check console.
+Build the full JSON body including the `version` field from the versions list:
+
+```json
+{"name":"my-db","type":"postgresql","version":"postgresql-14.8.0","quota":{"cpu":1,"memory":1,"storage":3,"replicas":1},"terminationPolicy":"delete"}
+```
+
+Run `sealos-db.sh create '<json>'`. On success (201), poll with `sealos-db.sh get` every 5 seconds until status is `running`. Timeout after 2 minutes with guidance to check console.
 
 ### Step 4: Show Connection Info and Integrate
 
@@ -118,7 +167,7 @@ When writing to `.env`, check if file exists and append, don't overwrite.
 
 ## Op B: List Databases
 
-Run `list-databases.sh` and format output as a readable table:
+Run `sealos-db.sh list` and format output as a readable table:
 
 ```
 Name            Type        Version             Status    CPU  Mem  Storage  Replicas
@@ -128,13 +177,13 @@ cache           redis       redis-7.0.6         Running   1    1GB  3GB      1
 
 Highlight abnormal statuses (Failed, Stopped) so user notices them.
 
-Pass `--versions` flag to show available database versions instead.
+Use `sealos-db.sh list-versions` to show available database versions instead.
 
 ---
 
 ## Op C: Get Database Details
 
-Run `get-database.sh {name}`. If no name specified, list databases first and ask which one.
+Run `sealos-db.sh get {name}`. If no name specified, list databases first and ask which one.
 
 Display: name, type, version, status, quota, and full connection info (private + public if enabled).
 
@@ -148,7 +197,7 @@ If no database name specified, list databases and ask which one.
 
 ### Step 2: Show Current Specs
 
-Run `get-database.sh {name}` and display current resource allocation.
+Run `sealos-db.sh get {name}` and display current resource allocation.
 
 ### Step 3: Collect Changes
 
@@ -173,7 +222,7 @@ Resource Update for "my-app-db":
 
 ### Step 5: Execute
 
-Run `update-database.sh {name} '{json}'`. Returns 204 on success.
+Run `sealos-db.sh update {name} '{json}'`. Returns 204 on success.
 
 ---
 
@@ -187,11 +236,11 @@ If no name specified, list databases and ask which one.
 
 ### Step 2: Show What Will Be Deleted
 
-Run `get-database.sh {name}` and display full details so user sees what they're losing.
+Run `sealos-db.sh get {name}` and display full details so user sees what they're losing.
 
 ### Step 3: Show Termination Policy
 
-Run `get-database.sh {name}` to check the current `terminationPolicy`:
+Run `sealos-db.sh get {name}` to check the current `terminationPolicy`:
 - `delete`: Cluster removed but **persistent volumes kept** (data recoverable)
 - `wipeout`: **Everything including data removed** (irreversible)
 
@@ -204,84 +253,65 @@ Ask the user to type the database name to confirm:
 
 ### Step 5: Execute
 
-Run `delete-database.sh {name}`. Returns 204 on success.
+Run `sealos-db.sh delete {name}`. Returns 204 on success.
 
 ---
 
 ## Op F: Simple Actions (Start/Pause/Restart/Public Access)
 
-All handled by `database-action.sh {name} {action}`.
+All handled by `sealos-db.sh {action} {name}`.
 
 ### Start / Pause / Restart
 
 1. If no name specified, list databases and ask which one
 2. Confirm the action
-3. Run `database-action.sh {name} start|pause|restart`
-4. For **start**: poll `get-database.sh` until status is `running`
+3. Run `sealos-db.sh start|pause|restart {name}`
+4. For **start**: poll `sealos-db.sh get {name}` until status is `running`
 
 ### Enable Public Access
 
 1. If no name specified, list databases and ask which one
 2. **Warn**: "This will expose your database to the internet. Are you sure?"
-3. Run `database-action.sh {name} enable-public`
-4. Re-fetch details with `get-database.sh` and display the `publicConnection` string
+3. Run `sealos-db.sh enable-public {name}`
+4. Re-fetch details with `sealos-db.sh get {name}` and display the `publicConnection` string
 
 ### Disable Public Access
 
 1. Confirm with user
-2. Run `database-action.sh {name} disable-public`
+2. Run `sealos-db.sh disable-public {name}`
 
 ---
 
-## Scripts
+## Script
 
-All scripts are in `scripts/` relative to this skill file.
-Common environment variables:
+Single entry point: `scripts/sealos-db.sh`. All commands include connect/read timeouts.
+
+Environment variables:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `KUBECONFIG_PATH` | Path to kubeconfig file | `~/.kube/config` |
 | `API_URL` | Database API base URL (including `/api/v2alpha`) | (required) |
+| `KUBECONFIG_PATH` | Path to kubeconfig file (fallback when stdin not used) | `~/.kube/config` |
+| stdin | Raw kubeconfig YAML piped via heredoc (preferred) | |
 
-### scripts/create-database.sh
+Usage with stdin (preferred -- no files written):
 
 ```bash
-API_URL="..." bash scripts/create-database.sh '{"name":"my-db","type":"postgresql","quota":{"cpu":1,"memory":1,"storage":3,"replicas":1}}'
+API_URL="..." bash scripts/sealos-db.sh list <<'KUBECONFIG'
+<raw kubeconfig YAML>
+KUBECONFIG
+
+API_URL="..." bash scripts/sealos-db.sh create '{"name":"my-db",...}' <<'KUBECONFIG'
+<raw kubeconfig YAML>
+KUBECONFIG
 ```
 
-### scripts/get-database.sh
+Usage with file path (when user points to an existing file):
 
 ```bash
-API_URL="..." bash scripts/get-database.sh my-db
+API_URL="..." bash scripts/sealos-db.sh list-versions                          # no auth needed
+KUBECONFIG_PATH="/path/to/kc.yaml" API_URL="..." bash scripts/sealos-db.sh list
 ```
-
-### scripts/list-databases.sh
-
-```bash
-API_URL="..." bash scripts/list-databases.sh           # list databases
-API_URL="..." bash scripts/list-databases.sh --versions # list available versions
-```
-
-### scripts/update-database.sh
-
-```bash
-API_URL="..." bash scripts/update-database.sh my-db '{"quota":{"cpu":2,"memory":4}}'
-```
-
-### scripts/delete-database.sh
-
-```bash
-API_URL="..." bash scripts/delete-database.sh my-db
-```
-
-### scripts/database-action.sh
-
-```bash
-API_URL="..." bash scripts/database-action.sh my-db start
-API_URL="..." bash scripts/database-action.sh my-db pause
-API_URL="..." bash scripts/database-action.sh my-db restart
-API_URL="..." bash scripts/database-action.sh my-db enable-public
-API_URL="..." bash scripts/database-action.sh my-db disable-public
 ```
 
 ## Reference Files
@@ -293,6 +323,10 @@ API_URL="..." bash scripts/database-action.sh my-db disable-public
 
 ## Error Handling
 
+**CRITICAL: Treat each error independently.** When a retry also fails, analyze the
+NEW error message on its own merits. Do NOT chain unrelated errors into a single
+conclusion. Each API call failure should be diagnosed from its own error response.
+
 | Scenario | Action |
 |----------|--------|
 | kubeconfig not found | Guide user to download from Sealos console |
@@ -302,13 +336,19 @@ API_URL="..." bash scripts/database-action.sh my-db disable-public
 | Storage shrink requested | Refuse, explain it's a K8s limitation |
 | Creation timeout (>2 min) | Inform user, offer to keep polling or check console |
 | Delete without confirmation | NEVER proceed without explicit name confirmation |
+| "Unsupported version" (500) | Server-side issue with a listed version; retry WITHOUT the version field to let API auto-select |
+| "namespace not found" (500) | Kubeconfig is a cluster admin kubeconfig, not a Sealos user kubeconfig. Ask user to download their user kubeconfig from Sealos Console > Settings > Kubeconfig |
 
 ## Important Notes
 
 - NEVER hardcode or log passwords outside of the connection info display
-- Always use the scripts in `scripts/` for API calls; don't construct curl commands inline
-- The kubeconfig is sensitive -- never echo or write it to output
+- Always use `scripts/sealos-db.sh` for API calls; don't construct curl commands inline
+- **NEVER write kubeconfig to any file** -- pass via stdin heredoc to the script
+- **NEVER pass large strings through shell variables** -- use heredocs instead
+- The kubeconfig is sensitive -- never echo it to output
 - When writing to `.env`, check if file exists and append, don't overwrite
+- Version must come from `sealos-db.sh list-versions` output. If a listed version is rejected by the server, retry without the version field
+- When an API call fails, diagnose that specific error. Do NOT assume a second failure has the same root cause as the first
 - MySQL type is `apecloud-mysql`, not `mysql`
 - Storage can only be expanded, never shrunk
 - Delete always requires the user to type the database name to confirm
