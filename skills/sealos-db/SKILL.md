@@ -57,8 +57,8 @@ Step 4: Update Memory       (save state for next session)
 
 ## Step 0: Check Memory
 
-Check for a memory file at the project's auto memory directory:
-`~/.claude/projects/{project}/memory/sealos-db.md`
+Check for a memory file named `sealos-db.md` in the project's auto memory directory
+(the path is provided by the system environment, e.g. `~/.claude/projects/.../memory/sealos-db.md`).
 
 **If memory file exists and contains `kubeconfig_path` + `api_url`:**
 1. Verify the kubeconfig file still exists at the saved path
@@ -220,7 +220,7 @@ Database config:
   CPU:         1 Core
   Memory:      1 GB
   Storage:     3 GB
-  Replicas:    1
+  Replicas:    3
   Termination: delete (data volumes kept)
 ```
 
@@ -324,7 +324,7 @@ Constraints:
 
 Build JSON body:
 ```json
-{"name":"my-db","type":"postgresql","version":"postgresql-16.4.0","quota":{"cpu":1,"memory":1,"storage":3,"replicas":1},"terminationPolicy":"delete"}
+{"name":"my-db","type":"postgresql","version":"postgresql-16.4.0","quota":{"cpu":1,"memory":1,"storage":3,"replicas":3},"terminationPolicy":"delete"}
 ```
 
 Run `node scripts/sealos-db.mjs create-wait '<json>'`. This single command creates the
@@ -456,8 +456,8 @@ cn.sailos     https://dbprovider.cn.sailos.io/api/v2alpha
 
 ## Step 4: Update Memory
 
-After every successful operation, update the memory file at:
-`~/.claude/projects/{project}/memory/sealos-db.md`
+After every successful operation, update the memory file named `sealos-db.md`
+in the project's auto memory directory.
 
 **What to save and when:**
 
@@ -527,8 +527,8 @@ node $SCRIPT init ~/sealos-kc.yaml https://dbprovider.your-domain.com
 node $SCRIPT list-versions
 node $SCRIPT list
 node $SCRIPT get my-db
-node $SCRIPT create '{"name":"my-db","type":"postgresql","quota":{"cpu":1,"memory":1,"storage":3,"replicas":1}}'
-node $SCRIPT create-wait '{"name":"my-db","type":"postgresql","quota":{"cpu":1,"memory":1,"storage":3,"replicas":1}}'
+node $SCRIPT create '{"name":"my-db","type":"postgresql","quota":{"cpu":1,"memory":1,"storage":3,"replicas":3}}'
+node $SCRIPT create-wait '{"name":"my-db","type":"postgresql","quota":{"cpu":1,"memory":1,"storage":3,"replicas":3}}'
 node $SCRIPT update my-db '{"quota":{"cpu":2}}'
 node $SCRIPT delete my-db
 node $SCRIPT start|pause|restart|enable-public|disable-public my-db

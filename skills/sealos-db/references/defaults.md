@@ -7,7 +7,7 @@ to the user as "tiers" — the user sees individual CPU/Memory/Storage/Replicas 
 
 | Scenario | CPU | Memory | Storage | Replicas | Trigger phrases |
 |----------|-----|--------|---------|----------|-----------------|
-| Default | 1 | 1 GB | 3 GB | 1 | no size hint, "dev", "testing", "try" |
+| Default | 1 | 1 GB | 3 GB | 3 | no size hint, "dev", "testing", "try" |
 | Medium | 2 | 2 GB | 10 GB | 1 | "small", "starter" |
 | Production | 2 | 4 GB | 20 GB | 3 | "prod", "production", "HA", "high availability" |
 | Custom | — | — | — | — | specific numbers like "4 cores, 8g memory" |
@@ -97,11 +97,10 @@ in the customize flow. Default to `delete` in the recommended config.
 | quota.cpu | yes | number | enum: 1,2,3,4,5,6,7,8 | 1 |
 | quota.memory | yes | number | range: 0.1–32 GB | 1 |
 | quota.storage | yes | number | range: 1–300 GB | 3 |
-| quota.replicas | yes | integer | range: 1–20 | 3 (API default) |
+| quota.replicas | yes | integer | range: 1–20 | 3 |
 | terminationPolicy | no | string | enum: delete, wipeout | delete |
 | autoBackup | no | object | see openapi.json | none |
 | parameterConfig | no | object | DB-specific | none |
 
-**Note:** `replicas` API default is 3, but resource presets above may override to 1
-for dev/default scenarios. Memory for create is a continuous range (0.1–32),
+**Note:** Memory for create is a continuous range (0.1–32),
 while update is discrete enum (1,2,4,6,8,12,16,32).

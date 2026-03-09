@@ -244,8 +244,41 @@ async function get(cfg, name) {
   return res.body;
 }
 
+function validateCreateBody(body) {
+  const errors = [];
+  if (!body.name) {
+    errors.push('name is required');
+  } else {
+    if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(body.name)) errors.push('name must match ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$');
+    if (body.name.length > 63) errors.push('name must be at most 63 characters');
+  }
+  if (!body.type) errors.push('type is required');
+  if (body.quota) {
+    const q = body.quota;
+    if (q.cpu !== undefined && (!Number.isInteger(q.cpu) || q.cpu < 1 || q.cpu > 8)) errors.push('cpu must be an integer 1-8');
+    if (q.memory !== undefined && (typeof q.memory !== 'number' || q.memory < 0.1 || q.memory > 32)) errors.push('memory must be 0.1-32 GB');
+    if (q.storage !== undefined && (typeof q.storage !== 'number' || q.storage < 1 || q.storage > 300)) errors.push('storage must be 1-300 GB');
+    if (q.replicas !== undefined && (!Number.isInteger(q.replicas) || q.replicas < 1 || q.replicas > 20)) errors.push('replicas must be an integer 1-20');
+  }
+  if (body.terminationPolicy && !['delete', 'wipeout'].includes(body.terminationPolicy)) errors.push('terminationPolicy must be "delete" or "wipeout"');
+  if (errors.length) throw new Error('Validation failed: ' + errors.join('; '));
+}
+
+function validateUpdateBody(body) {
+  const errors = [];
+  if (body.quota) {
+    const q = body.quota;
+    if (q.cpu !== undefined && ![1, 2, 3, 4, 5, 6, 7, 8].includes(q.cpu)) errors.push('cpu must be one of: 1, 2, 3, 4, 5, 6, 7, 8');
+    if (q.memory !== undefined && ![1, 2, 4, 6, 8, 12, 16, 32].includes(q.memory)) errors.push('memory must be one of: 1, 2, 4, 6, 8, 12, 16, 32 GB');
+    if (q.storage !== undefined && (typeof q.storage !== 'number' || q.storage < 1 || q.storage > 300)) errors.push('storage must be 1-300 GB (expand only)');
+    if (q.replicas !== undefined && (!Number.isInteger(q.replicas) || q.replicas < 1 || q.replicas > 20)) errors.push('replicas must be an integer 1-20');
+  }
+  if (errors.length) throw new Error('Validation failed: ' + errors.join('; '));
+}
+
 async function create(cfg, jsonBody) {
   const body = typeof jsonBody === 'string' ? JSON.parse(jsonBody) : jsonBody;
+  validateCreateBody(body);
   const auth = getEncodedKubeconfig(cfg.kubeconfigPath);
   const res = await apiCall('POST', '/databases', { apiUrl: cfg.apiUrl, auth, body });
   if (res.status !== 201) throw new Error(`HTTP ${res.status}: ${JSON.stringify(res.body)}`);
@@ -254,6 +287,7 @@ async function create(cfg, jsonBody) {
 
 async function update(cfg, name, jsonBody) {
   const body = typeof jsonBody === 'string' ? JSON.parse(jsonBody) : jsonBody;
+  validateUpdateBody(body);
   const auth = getEncodedKubeconfig(cfg.kubeconfigPath);
   const res = await apiCall('PATCH', `/databases/${name}`, { apiUrl: cfg.apiUrl, auth, body });
   if (res.status !== 204) throw new Error(`HTTP ${res.status}: ${JSON.stringify(res.body)}`);
@@ -348,21 +382,23 @@ async function createWait(cfg, jsonBody) {
   const start = Date.now();
 
   let lastStatus = 'creating';
+  let consecutiveErrors = 0;
   while (Date.now() - start < timeout) {
     await sleep(interval);
     try {
       const info = await get(cfg, name);
+      consecutiveErrors = 0;
       lastStatus = info.status;
       process.stderr.write(`Status: ${lastStatus}\n`);
-      if (lastStatus === 'running') {
+      if (lastStatus.toLowerCase() === 'running') {
         return info;
       }
-      if (lastStatus === 'failed') {
+      if (lastStatus.toLowerCase() === 'failed') {
         throw new Error(`Database creation failed. Status: ${lastStatus}`);
       }
     } catch (e) {
-      // get might fail temporarily during creation
-      if (Date.now() - start > timeout) throw e;
+      consecutiveErrors++;
+      if (consecutiveErrors >= 5 || Date.now() - start > timeout) throw e;
     }
   }
 
