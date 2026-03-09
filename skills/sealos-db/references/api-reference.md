@@ -2,6 +2,15 @@
 
 Base URL: `https://dbprovider.{domain}/api/v2alpha`
 
+> **API Version:** `v2alpha` — centralized in the script constant `API_PATH` (`scripts/sealos-db.mjs`).
+> If the API version changes, update `API_PATH` in the script; the rest auto-follows.
+
+## TLS Note
+
+The script sets `rejectUnauthorized: false` for HTTPS requests because Sealos clusters
+may use self-signed TLS certificates. Without this, Node.js would reject connections
+to clusters that don't have publicly trusted certificates.
+
 ## Authentication
 
 All requests require a URL-encoded kubeconfig YAML in the `Authorization` header,

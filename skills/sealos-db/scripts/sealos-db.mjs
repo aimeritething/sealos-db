@@ -11,7 +11,7 @@
 //   3. Error with hint to run `init`
 //
 // Commands:
-//   init <kubeconfig_path>           Parse kubeconfig, test connection, save config
+//   init <kubeconfig_path> [api_url]  Parse kubeconfig, probe API URL, save config
 //   list-versions                    List available database versions (no auth needed)
 //   list                             List all databases
 //   get <name>                       Get database details and connection info
@@ -32,6 +32,7 @@ import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 
 const CONFIG_PATH = resolve(homedir(), '.config/sealos-db/config.json');
+const API_PATH = '/api/v2alpha'; // API version — update here if the version changes
 
 // --- config ---
 
@@ -73,7 +74,7 @@ function getEncodedKubeconfig(path) {
 
 // --- HTTP ---
 
-function apiCall(method, endpoint, { apiUrl, auth, body } = {}) {
+function apiCall(method, endpoint, { apiUrl, auth, body, timeout = 30000 } = {}) {
   return new Promise((resolve, reject) => {
     const url = new URL(apiUrl + endpoint);
     const isHttps = url.protocol === 'https:';
@@ -92,8 +93,8 @@ function apiCall(method, endpoint, { apiUrl, auth, body } = {}) {
       path: url.pathname + url.search,
       method,
       headers,
-      timeout: 30000,
-      rejectUnauthorized: false, 
+      timeout,
+      rejectUnauthorized: false, // Sealos clusters may use self-signed certificates
     };
 
     const req = reqFn(opts, (res) => {
@@ -137,6 +138,54 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// --- kubeconfig parsing ---
+
+function extractServerUrl(content) {
+  // Handles quoted and unquoted server URLs:
+  //   server: https://host:6443
+  //   server: "https://host:6443"
+  //   server: 'https://host:6443'
+  const match = content.match(/server:\s*['"]?(https?:\/\/[^\s'"]+)/);
+  return match ? match[1] : null;
+}
+
+function deriveApiCandidates(serverUrl) {
+  const urlObj = new URL(serverUrl);
+  const hostname = urlObj.hostname;
+  const parts = hostname.split('.');
+
+  const candidates = [];
+  const seen = new Set();
+  function add(url) {
+    if (!seen.has(url)) { seen.add(url); candidates.push(url); }
+  }
+
+  // 1. dbprovider.<full-hostname>
+  add(`https://dbprovider.${hostname}${API_PATH}`);
+
+  // 2. Strip first subdomain (e.g., apiserver.usw.sailos.io → dbprovider.usw.sailos.io)
+  if (parts.length > 2) {
+    add(`https://dbprovider.${parts.slice(1).join('.')}${API_PATH}`);
+  }
+
+  // 3. Strip first two subdomains (for deeper hierarchies)
+  if (parts.length > 3) {
+    add(`https://dbprovider.${parts.slice(2).join('.')}${API_PATH}`);
+  }
+
+  return candidates;
+}
+
+async function probeApiUrl(candidates) {
+  for (const apiUrl of candidates) {
+    try {
+      const res = await apiCall('GET', '/databases/versions', { apiUrl, timeout: 5000 });
+      if (res.status === 200) return apiUrl;
+    } catch { /* try next candidate */ }
+  }
+  return null;
+}
+
 // --- individual commands ---
 
 async function listVersions(cfg) {
@@ -158,16 +207,7 @@ async function get(cfg, name) {
   const auth = getEncodedKubeconfig(cfg.kubeconfigPath);
   const res = await apiCall('GET', `/databases/${name}`, { apiUrl: cfg.apiUrl, auth });
   if (res.status !== 200) throw new Error(`HTTP ${res.status}: ${JSON.stringify(res.body)}`);
-  // Return subset with key fields
-  const d = res.body;
-  return {
-    name: d.name,
-    type: d.type,
-    version: d.version,
-    status: d.status,
-    quota: d.quota,
-    connection: d.connection,
-  };
+  return res.body;
 }
 
 async function create(cfg, jsonBody) {
@@ -183,7 +223,13 @@ async function update(cfg, name, jsonBody) {
   const auth = getEncodedKubeconfig(cfg.kubeconfigPath);
   const res = await apiCall('PATCH', `/databases/${name}`, { apiUrl: cfg.apiUrl, auth, body });
   if (res.status !== 204) throw new Error(`HTTP ${res.status}: ${JSON.stringify(res.body)}`);
-  return { success: true, message: `Database update initiated` };
+  // Re-fetch to return updated state
+  try {
+    const updated = await get(cfg, name);
+    return { success: true, message: 'Database update initiated', database: updated };
+  } catch {
+    return { success: true, message: 'Database update initiated' };
+  }
 }
 
 async function del(cfg, name) {
@@ -202,7 +248,7 @@ async function action(cfg, name, actionName) {
 
 // --- batch commands ---
 
-async function init(kubeconfigPath) {
+async function init(kubeconfigPath, manualApiUrl) {
   // 1. Resolve path
   const kcPath = kubeconfigPath.replace(/^~/, homedir());
   const absPath = resolve(kcPath);
@@ -211,47 +257,49 @@ async function init(kubeconfigPath) {
     throw new Error(`Kubeconfig not found at ${absPath}`);
   }
 
-  // 2. Parse kubeconfig to extract server URL (regex, no YAML lib)
+  // 2. Parse kubeconfig
   const kcContent = readFileSync(absPath, 'utf-8');
-  const serverMatch = kcContent.match(/server:\s*(https?:\/\/[^\s]+)/);
-  if (!serverMatch) {
+  const serverUrl = extractServerUrl(kcContent);
+  if (!serverUrl) {
     throw new Error('Could not find server URL in kubeconfig');
   }
-  const serverUrl = serverMatch[1];
-  const urlObj = new URL(serverUrl);
-  const domain = urlObj.hostname;
 
-  // 3. Derive API URL
-  const apiUrl = `https://dbprovider.${domain}/api/v2alpha`;
+  // 3. Resolve API URL — manual override or auto-probe
+  let apiUrl;
+  if (manualApiUrl) {
+    apiUrl = manualApiUrl.replace(/\/+$/, '');
+    if (!apiUrl.endsWith(API_PATH)) {
+      apiUrl += API_PATH;
+    }
+  } else {
+    const candidates = deriveApiCandidates(serverUrl);
+    apiUrl = await probeApiUrl(candidates);
+    if (!apiUrl) {
+      throw new Error(
+        `Could not auto-detect API URL from server: ${serverUrl}\n` +
+        `Tried: ${candidates.join(', ')}\n` +
+        `Specify manually: node sealos-db.mjs init ${kubeconfigPath} <api_url>\n` +
+        `Example: node sealos-db.mjs init ${kubeconfigPath} https://dbprovider.your-domain.com`
+      );
+    }
+  }
 
   // 4. Save config
   saveConfig(absPath, apiUrl);
 
-  // 5. Test connection + fetch versions and databases
+  // 5. Fetch versions and databases
   const cfg = { apiUrl, kubeconfigPath: absPath };
-
   const versions = await listVersions(cfg);
 
   let databases = [];
   try {
     databases = await list(cfg);
   } catch (e) {
-    // Auth might fail but versions worked - still return partial result
-    return {
-      apiUrl,
-      kubeconfigPath: absPath,
-      versions,
-      databases: null,
-      authError: e.message,
-    };
+    // Auth might fail but versions worked — return partial result
+    return { apiUrl, kubeconfigPath: absPath, versions, databases: null, authError: e.message };
   }
 
-  return {
-    apiUrl,
-    kubeconfigPath: absPath,
-    versions,
-    databases,
-  };
+  return { apiUrl, kubeconfigPath: absPath, versions, databases };
 }
 
 async function createWait(cfg, jsonBody) {
@@ -309,8 +357,8 @@ async function main() {
 
     switch (cmd) {
       case 'init': {
-        if (!args[0]) throw new Error('Usage: node sealos-db.mjs init <kubeconfig_path>');
-        result = await init(args[0]);
+        if (!args[0]) throw new Error('Usage: node sealos-db.mjs init <kubeconfig_path> [api_url]');
+        result = await init(args[0], args[1]);
         break;
       }
 

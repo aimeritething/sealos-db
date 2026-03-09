@@ -115,9 +115,15 @@ If user is `kubernetes-admin` or any cluster admin identity → **STOP**:
 ### 1c. Init (derive API URL + validate connection)
 
 Run `node scripts/sealos-db.mjs init <kubeconfig_path>`. This single command:
-- Parses the kubeconfig, extracts the server URL, derives the API URL
+- Parses the kubeconfig, extracts the server URL
+- **Auto-probes** candidate API URLs (tries `dbprovider.<domain>` with subdomain
+  variations) and uses the first one that responds successfully
 - Saves config to `~/.config/sealos-db/config.json`
 - Fetches available versions and lists databases
+
+**If auto-detection fails** (error mentions "Could not auto-detect API URL"):
+Ask the user for their Sealos domain, then run with manual URL:
+`node scripts/sealos-db.mjs init <kubeconfig_path> https://dbprovider.<domain>`
 
 If `init` returns an `authError` → kubeconfig expired, re-download.
 The `init` response includes `versions` and `databases` — use these in Step 3
@@ -437,6 +443,8 @@ After every successful operation, update the memory file at:
 
 Single entry point: `scripts/sealos-db.mjs` (relative to this skill's directory).
 Zero external dependencies (Node.js only).
+TLS certificate verification is disabled (`rejectUnauthorized: false`) because Sealos
+clusters may use self-signed certificates. See `references/api-reference.md` for details.
 
 **The script is bundled with this skill — do NOT check if it exists. Just run it.**
 
@@ -454,8 +462,11 @@ then run: `node /Users/x/project/.claude/skills/sealos-db/scripts/sealos-db.mjs 
 # Use the absolute path from "Additional working directories" — examples below use SCRIPT as placeholder
 SCRIPT="/path/from/additional-working-dirs/sealos-db.mjs"
 
-# First-time setup (parses kubeconfig, saves config, returns versions + databases)
+# First-time setup — auto-probes API URL, saves config, returns versions + databases
 node $SCRIPT init ~/sealos-kc.yaml
+
+# First-time setup with manual API URL (if auto-probe fails)
+node $SCRIPT init ~/sealos-kc.yaml https://dbprovider.your-domain.com
 
 # After init, no env vars needed — config is auto-loaded
 node $SCRIPT list-versions
